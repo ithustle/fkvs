@@ -3,9 +3,6 @@
 
 #include "../../core/hashtable.h"
 
-void handle_command(hashtable_t *table, int client_fd,
-                    const unsigned char *buffer, size_t bytes_read);
-
 unsigned char *construct_set_command(const char *key, const char *value,
                                      size_t *command_len);
 

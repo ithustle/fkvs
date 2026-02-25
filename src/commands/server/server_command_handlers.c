@@ -363,14 +363,17 @@ void handle_decr_by_command(client_t *client, unsigned char *buffer,
     }
 
     const uint64_t current = strtoull(old_value->ptr, NULL, 10);
-    const uint64_t increment = strtoull((const char *)decr_str, NULL, 10);
+    const uint64_t decrement = strtoull((const char *)decr_str, NULL, 10);
+    free(old_value->ptr);
+    free(old_value);
+    free(decr_str);
 
-    const uint64_t sum = current + increment;
+    const uint64_t diff = current - decrement;
     if (server.verbose) {
-        printf("Value incremented to %llu\n", sum);
+        printf("Value decremented to %llu\n", diff);
     }
 
-    const char *result = uint64_to_string(sum);
+    char *result = uint64_to_string(diff);
     const size_t result_len = strlen(result);
 
     if (!set_value(table, &buffer[5], key_len, (unsigned char *)result,

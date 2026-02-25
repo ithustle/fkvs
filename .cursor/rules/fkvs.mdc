@@ -1,0 +1,72 @@
+---
+description: FKVS project conventions, memory rules, and architecture guide
+globs:
+alwaysApply: true
+---
+
+# FKVS Project Rules
+
+## Project Overview
+
+FKVS (Fast Key Value Store) is a high-performance key-value store written in C23. Single-threaded, non-blocking I/O multiplexed event loop. Default port: 5995. Three executables: `fkvs-server`, `fkvs-cli`, `fkvs-benchmark`.
+
+## Build and Test
+
+```bash
+# Build
+cmake -S . -B build && cmake --build build
+
+# Test
+cd build && ctest --output-on-failure
+
+# Alternative: use the project Makefile
+make -f Makefile.fkvs setup-and-build
+make -f Makefile.fkvs tests
+```
+
+## Architecture
+
+- **Event dispatchers**: kqueue (macOS), epoll (Linux), io_uring (Linux with liburing). Compile-time selected via CMakeLists.txt.
+- **Binary protocol**: Custom frame-based wire protocol. CMD_* constants defined in `src/commands/common/command_defs.h`.
+- **Compile definitions**: Source files compile with `SERVER` or `CLI` define. Shared headers use `#ifdef SERVER`/`#ifdef CLI` blocks.
+- **Core data**: `server_t` (server state), `client_t` (per-client state with 64KB buffers), `hashtable_t` (hash table with chaining, INT and RAW value types).
+
+## Memory Rules (Critical)
+
+- `get_value()` returns a deep copy. MUST free both `value->ptr` and `value`. Key param is `unsigned char *` (no const).
+- `find_entry()` returns a direct pointer into the hashtable. Do NOT free. Key param is `const unsigned char *`. Prefer this for read-only access.
+- `set_value()` returns `hash_table_entry_t*` (NULL on allocation failure). Hashtable makes internal copies. Do NOT free the return value.
+- `uint64_to_string()` / `int64_to_string()` return malloc'd strings. MUST free.
+- `construct_*_command()` returns malloc'd buffers. MUST free after send.
+- Free ALL allocated memory on ALL error paths.
+
+## Adding a New Command (8 files)
+
+1. `src/commands/common/command_defs.h` -- add CMD_* constant
+2. `src/commands/server/server_command_handlers.h` -- handler declaration
+3. `src/commands/server/server_command_handlers.c` -- handler implementation + register in `init_command_handlers()`
+4. `src/commands/common/command_parser.h` -- frame constructor declaration
+5. `src/commands/common/command_parser.c` -- frame builder implementation
+6. `src/commands/client/client_command_handlers.h` -- cmd_* declaration
+7. `src/commands/client/client_command_handlers.c` -- cmd_* implementation + add to `command_table[]` + add to `cmd_unknown()` exclusion + response handler
+8. `tests/` -- unit tests (+ update `CMakeLists.txt` if new source files)
+
+**Handler ordering rule**: Frame validation MUST happen BEFORE lazy expiration (`check_and_delete_if_expired`).
+
+**Response protocol note**: `send_reply()` places `STATUS_SUCCESS` (0x01) at `buffer[2]`, NOT the CMD byte. Only `send_pong()` places `CMD_PING`. Client response dispatch by CMD byte at buffer[2] only works for PING — all other responses fall through to the generic else branch.
+
+## Code Style
+
+LLVM-based formatting, 4-space indentation, Linux brace style, no tabs. See `.clang-format` for full config.
+
+## Detailed Guides
+
+See `docs/guides/` for in-depth documentation:
+- `adding-commands.md` -- full walkthrough with code templates
+- `wire-protocol.md` -- binary frame format
+- `memory-management.md` -- ownership rules and common pitfalls
+- `testing-guide.md` -- testing patterns
+- `data-structures.md` -- hashtable and linked list internals
+- `debugging-checklist.md` -- common issues and fixes
+- `event-dispatchers-deep.md` -- kqueue/epoll/io_uring details
+- `build-and-config.md` -- CMake and configuration

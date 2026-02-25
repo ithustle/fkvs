@@ -97,6 +97,10 @@ $ ./fkvs-cli -h 127.0.0.1 -p 5995 --non-interactive
 - INCRBY key value
 - DECR key
 - DECRBY key value
+- EXPIRE key seconds
+- TTL key
+- SETEX key seconds value
+- PERSIST key
 - INFO
 
 ## Documentation
@@ -106,9 +110,22 @@ $ ./fkvs-cli -h 127.0.0.1 -p 5995 --non-interactive
 - [Performance Roadmap](docs/performance-roadmap.md) - Path to 1M req/s optimization plan
 - [Event Dispatchers](docs/event-dispatchers.md) - Event loop implementations
 
+### Development Guides
+
+These guides provide detailed technical documentation for developers and AI assistants working on FKVS:
+
+- [Adding New Commands](docs/guides/adding-commands.md) - Step-by-step guide to implement a new command
+- [Wire Protocol](docs/guides/wire-protocol.md) - Binary frame format specification
+- [Memory Management](docs/guides/memory-management.md) - Pointer ownership and lifecycle rules
+- [Testing Guide](docs/guides/testing-guide.md) - How to write and run unit tests
+- [Data Structures](docs/guides/data-structures.md) - Hashtable, linked list, server/client state
+- [Event Dispatchers (Deep Dive)](docs/guides/event-dispatchers-deep.md) - kqueue, epoll, io_uring internals
+- [Debugging Checklist](docs/guides/debugging-checklist.md) - Systematic bug analysis
+- [Build & Configuration](docs/guides/build-and-config.md) - CMake, source files, server/client config
+
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request. See the [Development Guides](#development-guides) for architecture details and conventions.
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
