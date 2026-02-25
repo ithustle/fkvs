@@ -21,8 +21,7 @@ cd build && ctest --output-on-failure
 ## Memory rules
 
 - `get_value()` returns a deep copy. Free both `value->ptr` and `value`. Key param: `unsigned char *`.
-- `find_entry()` returns a direct pointer into the hashtable. Do NOT free. Key param: `const unsigned char *`. Prefer for read-only access.
-- `set_value()` returns `hash_table_entry_t*`, NULL on error. Hashtable copies key/value internally. Do not free the return.
+- `set_value()` returns `bool`, false on error. Hashtable copies key/value internally.
 - `uint64_to_string()` / `int64_to_string()` return malloc'd strings. Must free.
 - `construct_*_command()` returns malloc'd buffers. Must free after send.
 - Free all allocations on every error path.
@@ -37,8 +36,6 @@ cd build && ctest --output-on-failure
 6. `src/commands/client/client_command_handlers.h` -- cmd_* declaration
 7. `src/commands/client/client_command_handlers.c` -- cmd_* impl + `command_table[]` + `cmd_unknown()` exclusion + response handler
 8. `tests/` -- unit tests (update `CMakeLists.txt` if adding new source files)
-
-Frame validation MUST happen BEFORE lazy expiration (`check_and_delete_if_expired`).
 
 **Response protocol note:** `send_reply()` places `STATUS_SUCCESS` (0x01) at `buffer[2]`, NOT the CMD byte. Only `send_pong()` puts `CMD_PING`. Client response dispatch by CMD byte at buffer[2] only works for PING — all other responses fall through to the generic else branch.
 

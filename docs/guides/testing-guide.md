@@ -18,15 +18,19 @@ void test_descriptive_name()
     hashtable_t *table = create_hash_table(64);
 
     // Action
-    hash_table_entry_t *entry = set_value(table,
+    bool ok = set_value(table,
         (const unsigned char *)"key", 3, "value", 5, VALUE_ENTRY_TYPE_RAW);
-    assert(entry != NULL);
+    assert(ok);
 
     // Verify
-    hash_table_entry_t *found = find_entry(table, (const unsigned char *)"key", 3);
-    assert(found != NULL);
-    assert(found->value->value_len == 5);
-    assert(memcmp(found->value->ptr, "value", 5) == 0);
+    value_entry_t *value;
+    size_t value_len;
+    assert(get_value(table, (unsigned char *)"key", 3, &value, &value_len));
+    assert(value_len == 5);
+    assert(memcmp(value->ptr, "value", 5) == 0);
+
+    free(value->ptr);
+    free(value);
 
     // Cleanup
     free_hash_table(table);
@@ -62,9 +66,9 @@ void test_set_and_get()
 {
     hashtable_t *table = create_hash_table(64);
 
-    hash_table_entry_t *entry = set_value(table,
+    bool ok = set_value(table,
         (const unsigned char *)"k", 1, "v", 1, VALUE_ENTRY_TYPE_RAW);
-    assert(entry != NULL);
+    assert(ok);
 
     // get_value() returns a COPY — must be freed
     value_entry_t *value;
@@ -80,76 +84,64 @@ void test_set_and_get()
 }
 ```
 
-### TTL / Expiration
+### Overwrite Existing Key
 
 ```c
-#include <time.h>
-
-// Local version (server's is static in utils.h, not exported)
-static int64_t now_monotonic_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
-}
-
-void test_ttl()
+void test_overwrite()
 {
     hashtable_t *table = create_hash_table(64);
-    set_value(table, (const unsigned char *)"temp", 4, "data", 4,
-              VALUE_ENTRY_TYPE_RAW);
 
-    hash_table_entry_t *entry = find_entry(table, (const unsigned char *)"temp", 4);
-    assert(entry != NULL);
-    assert(entry->value->expire_at == 0);  // default: no TTL
+    set_value(table, (const unsigned char *)"k", 1, "v1", 2, VALUE_ENTRY_TYPE_RAW);
+    set_value(table, (const unsigned char *)"k", 1, "v2", 2, VALUE_ENTRY_TYPE_RAW);
 
-    int64_t now = now_monotonic_ms();
-    entry->value->expire_at = now + 2000;
-    assert(entry->value->expire_at > now);
+    value_entry_t *value;
+    size_t value_len;
+    assert(get_value(table, (unsigned char *)"k", 1, &value, &value_len));
+    assert(memcmp(value->ptr, "v2", 2) == 0);
 
+    free(value->ptr);
+    free(value);
     free_hash_table(table);
-    printf("PASS: test_ttl\n");
+    printf("PASS: test_overwrite\n");
 }
 ```
 
-### Delete
+### Integer Values
 
 ```c
-void test_delete()
+void test_integer_value()
 {
     hashtable_t *table = create_hash_table(64);
-    set_value(table, (const unsigned char *)"k1", 2, "v1", 2, VALUE_ENTRY_TYPE_RAW);
 
-    assert(find_entry(table, (const unsigned char *)"k1", 2) != NULL);
-    assert(delete_entry(table, (const unsigned char *)"k1", 2) == true);
-    assert(find_entry(table, (const unsigned char *)"k1", 2) == NULL);
-    assert(delete_entry(table, (const unsigned char *)"k1", 2) == false);
+    set_value(table, (const unsigned char *)"counter", 7,
+              "100", 3, VALUE_ENTRY_TYPE_INT);
 
+    value_entry_t *value;
+    size_t value_len;
+    assert(get_value(table, (unsigned char *)"counter", 7, &value, &value_len));
+    assert(value->encoding == VALUE_ENTRY_TYPE_INT);
+    assert(memcmp(value->ptr, "100", 3) == 0);
+
+    free(value->ptr);
+    free(value);
     free_hash_table(table);
-    printf("PASS: test_delete\n");
+    printf("PASS: test_integer_value\n");
 }
 ```
 
-### TTL Preservation on Update
+### Key Not Found
 
 ```c
-void test_update_preserves_ttl()
+void test_key_not_found()
 {
     hashtable_t *table = create_hash_table(64);
-    set_value(table, (const unsigned char *)"k", 1, "100", 3, VALUE_ENTRY_TYPE_INT);
 
-    hash_table_entry_t *entry = find_entry(table, (const unsigned char *)"k", 1);
-    entry->value->expire_at = 999999;
-
-    // set_value automatically preserves expire_at on updates
-    set_value(table, (const unsigned char *)"k", 1, "200", 3, VALUE_ENTRY_TYPE_INT);
-
-    entry = find_entry(table, (const unsigned char *)"k", 1);
-    assert(entry->value->expire_at == 999999);
-    assert(memcmp(entry->value->ptr, "200", 3) == 0);
+    value_entry_t *value;
+    size_t value_len;
+    assert(!get_value(table, (unsigned char *)"missing", 7, &value, &value_len));
 
     free_hash_table(table);
-    printf("PASS: test_update_preserves_ttl\n");
+    printf("PASS: test_key_not_found\n");
 }
 ```
 

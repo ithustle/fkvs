@@ -8,24 +8,22 @@ Systematic checklist for code review, bug analysis, and debugging FKVS.
 - [ ] Every `uint64_to_string()` / `int64_to_string()` has matching `free()`?
 - [ ] Every `malloc()` is null-checked?
 - [ ] Every `construct_*_command()` has `free()` after send?
-- [ ] No `free()` on `find_entry()` returns?
 - [ ] No `free()` on stack/client buffers?
 
 ## 2. Frame Validation
 
-- [ ] Frame integrity validated BEFORE lazy expiration?
 - [ ] Bounds checking for key_len and value_len before buffer access?
 - [ ] `pos + 2 > bytes_read` checked before reading length fields?
 - [ ] core_len consistency verified against bytes_read?
 
 **Two validation patterns in the codebase:**
 
-Pattern 1 (GET, INCR, DECR, TTL, PERSIST):
+Pattern 1 (GET, INCR, DECR):
 ```c
 if (bytes_read - 2 != command_length) { send_error; return; }
 ```
 
-Pattern 2 (SET, SETEX): Extensive validation with core_len:
+Pattern 2 (SET): Extensive validation with core_len:
 ```c
 const uint16_t core_len = ((uint16_t)buffer[0] << 8) | buffer[1];
 if (bytes_read < (size_t)core_len + 2) { send_error; return; }
@@ -38,25 +36,22 @@ if (bytes_read < (size_t)core_len + 2) { send_error; return; }
 1. Extract lengths from buffer
 2. Validate frame integrity (sizes vs bytes_read)
 3. Validate data format (is_integer, bounds, etc.)
-4. check_and_delete_if_expired() (lazy expiration)
-5. Main operation (get_value, find_entry, etc.)
-6. Respond (send_reply, send_error, send_ok)
-7. Free memory
+4. Main operation (get_value, set_value, etc.)
+5. Respond (send_reply, send_error, send_ok)
+6. Free memory
 ```
 
 ## 4. set_value() Return
 
-- [ ] Return checked for NULL (`hash_table_entry_t*`)?
-- [ ] Error reported to client on NULL?
+- [ ] Return checked for false (`bool`)?
+- [ ] Error reported to client on false?
 - [ ] Previously allocated memory freed before return?
-- [ ] Access to `entry->value->expire_at` safe after check?
 
 ## 5. Async / Event Loop
 
 - [ ] io_uring: buffers are `static` or heap (NOT stack local)?
-- [ ] kqueue: timer identified by BOTH `evs[i].filter == EVFILT_TIMER` AND ident?
-- [ ] epoll: timerfd consumed via `read()` to re-arm?
-- [ ] io_uring: timer re-armed with new `io_uring_prep_read` + `submit` after each CQE?
+- [ ] kqueue: events identified by filter type and ident?
+- [ ] epoll: events dispatched based on fd comparison?
 
 ## 6. Strings and Buffers
 
@@ -71,7 +66,7 @@ if (bytes_read < (size_t)core_len + 2) { send_error; return; }
 ```c
 // BUG                              // FIX
 if (bad_condition) {                 if (bad_condition) {
-    send_error(fd);                      send_error(fd);
+    send_error(client);                  send_error(client);
     return; // LEAK                      free(value->ptr);
 }                                        free(value);
                                          return;
@@ -84,19 +79,10 @@ free(buffer);  // BUG: buffer is client->buffer (stack)
 // FIX: remove the free
 ```
 
-### Lazy expiration before frame validation
-```c
-// BUG: accesses buffer[5..key_len] before validating frame
-check_and_delete_if_expired(&buffer[5], key_len);
-if (bytes_read - 2 != command_length) { ... }  // should be BEFORE
-
-// FIX: swap the order
-```
-
 ### Stack buffer in io_uring
 ```c
 uint64_t timer_buf;  // BUG: stack local, corrupted when CQE arrives
-static uint64_t expire_timer_buf;  // FIX: file-scope static
+static uint64_t timer_buf;  // FIX: file-scope static
 ```
 
 ### Uninitialized pointer

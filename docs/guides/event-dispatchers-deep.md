@@ -22,13 +22,11 @@ All export: `int run_event_loop(void)` (declared in `event_dispatcher.h`).
 1. Make server.fd non-blocking
 2. Create event loop instance
 3. Register server.fd for read events
-4. Register 1-second timer for active key expiration
-5. Infinite loop:
+4. Infinite loop:
    a. Wait for events
-   b. Timer → expire_keys_cycle()
-   c. server.fd → accept() loop until EAGAIN
-   d. Client fd → recv() loop → try_process_frames()
-   e. EOF/error → close_and_drop_client()
+   b. server.fd → accept() loop until EAGAIN
+   c. Client fd → recv() loop → try_process_frames()
+   d. EOF/error → close_and_drop_client()
 ```
 
 ## kqueue (macOS)
@@ -40,25 +38,22 @@ const int kq = kqueue();
 // Register listening socket (edge-triggered with EV_CLEAR)
 struct kevent ch;
 EV_SET(&ch, server.fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, NULL);
-
-// Expiration timer (1 second, EVFILT_TIMER)
-#define EXPIRE_TIMER_IDENT 0xDEAD
-struct kevent timer_ev;
-EV_SET(&timer_ev, EXPIRE_TIMER_IDENT, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0, 1000, NULL);
-```
-
-### Event Identification
-```c
-// IMPORTANT: check BOTH filter AND ident to avoid collision with fd numbers
-if (evs[i].filter == EVFILT_TIMER && ident_fd == EXPIRE_TIMER_IDENT) {
-    expire_keys_cycle();
-}
 ```
 
 ### Register Client
 ```c
 // udata stores client_t pointer — avoids list lookup
 EV_SET(&ch, c->fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, c);
+```
+
+### Event Identification
+```c
+if (ident_fd == server.fd) {
+    // Accept new connections
+} else {
+    client_t *c = (client_t *)evs[i].udata;
+    // Handle client I/O
+}
 ```
 
 ## epoll (Linux)
@@ -70,23 +65,15 @@ const int epfd = epoll_create1(0);
 // Listening socket (edge-triggered with EPOLLET)
 struct epoll_event ev = { .events = EPOLLIN | EPOLLET, .data.fd = server.fd };
 epoll_ctl(epfd, EPOLL_CTL_ADD, server.fd, &ev);
-
-// Timer via timerfd (level-triggered — NO EPOLLET for timer)
-int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
-struct itimerspec its = { .it_interval = {.tv_sec = 1}, .it_value = {.tv_sec = 1} };
-timerfd_settime(tfd, 0, &its, NULL);
-
-struct epoll_event tev = { .events = EPOLLIN, .data.fd = tfd };  // No EPOLLET
-epoll_ctl(epfd, EPOLL_CTL_ADD, tfd, &tev);
 ```
 
-### Consuming Timer
+### Register Client
 ```c
-if (events[i].data.fd == tfd) {
-    uint64_t expirations;
-    read(tfd, &expirations, sizeof(expirations));  // MUST read to re-arm
-    expire_keys_cycle();
-}
+struct epoll_event ev;
+memset(&ev, 0, sizeof(ev));
+ev.events = EPOLLIN | EPOLLET;
+ev.data.ptr = client;
+epoll_ctl(epfd, EPOLL_CTL_ADD, client->fd, &ev);
 ```
 
 ## io_uring (Linux)
@@ -100,48 +87,20 @@ uint64_t timer_buf;
 io_uring_prep_read(sqe, tfd, &timer_buf, sizeof(timer_buf), 0);
 
 // CORRECT — file-scope static
-static uint64_t expire_timer_buf;
-io_uring_prep_read(sqe, tfd, &expire_timer_buf, sizeof(expire_timer_buf), 0);
+static uint64_t timer_buf;
+io_uring_prep_read(sqe, tfd, &timer_buf, sizeof(timer_buf), 0);
 ```
 
-2. **Sentinel for timer CQE identification:**
-```c
-static client_t expire_timer_sentinel = {.fd = -1};
+2. **Batch submission** via `BATCH_SUBMIT_THRESHOLD` (32).
 
-// During setup: sentinel fd is changed to timerfd
-expire_timer_sentinel.fd = tfd;
-
-io_uring_sqe_set_data(sqe, &expire_timer_sentinel);
-
-// In CQE handler: compare pointer
-if (c == &expire_timer_sentinel) { expire_keys_cycle(); /* re-arm... */ }
-```
-
-3. **Re-arm timer after each completion:**
-```c
-if (c == &expire_timer_sentinel) {
-    expire_keys_cycle();
-    struct io_uring_sqe *tsqe = io_uring_get_sqe(&ring);
-    if (tsqe) {
-        io_uring_prep_read(tsqe, expire_timer_sentinel.fd,
-                           &expire_timer_buf, sizeof(expire_timer_buf), 0);
-        io_uring_sqe_set_data(tsqe, &expire_timer_sentinel);
-        io_uring_submit(&ring);
-    }
-    io_uring_cqe_seen(&ring, cqe);
-    continue;
-}
-```
-
-4. **Batch submission** via `BATCH_SUBMIT_THRESHOLD` (32).
-
-## Adding a New Timer
+## Adding a Timer
 
 ### kqueue:
 ```c
 #define NEW_TIMER_IDENT 0xBEEF
 EV_SET(&timer_ev, NEW_TIMER_IDENT, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0, 5000, NULL);
 
+// IMPORTANT: check BOTH filter AND ident to avoid collision with fd numbers
 if (evs[i].filter == EVFILT_TIMER && ident_fd == NEW_TIMER_IDENT) {
     do_periodic_work();
 }
@@ -152,7 +111,26 @@ if (evs[i].filter == EVFILT_TIMER && ident_fd == NEW_TIMER_IDENT) {
 int new_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 struct itimerspec its = { .it_interval = {.tv_sec = 5}, .it_value = {.tv_sec = 5} };
 timerfd_settime(new_tfd, 0, &its, NULL);
-// Register with EPOLLIN (no EPOLLET), check events[i].data.fd
+// Register with EPOLLIN (no EPOLLET for timers), check events[i].data.fd
+
+// MUST read timerfd to re-arm
+uint64_t expirations;
+read(new_tfd, &expirations, sizeof(expirations));
+```
+
+### io_uring:
+```c
+// Use a sentinel client_t for timer identification
+static client_t timer_sentinel = {.fd = -1};
+timer_sentinel.fd = tfd;
+
+io_uring_sqe_set_data(sqe, &timer_sentinel);
+
+// In CQE handler: compare pointer
+if (c == &timer_sentinel) {
+    do_periodic_work();
+    // Re-arm: submit new read SQE for the timerfd
+}
 ```
 
 ## Shared Functions (in networking.c)

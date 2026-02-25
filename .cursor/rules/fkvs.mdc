@@ -34,8 +34,7 @@ make -f Makefile.fkvs tests
 ## Memory Rules (Critical)
 
 - `get_value()` returns a deep copy. MUST free both `value->ptr` and `value`. Key param is `unsigned char *` (no const).
-- `find_entry()` returns a direct pointer into the hashtable. Do NOT free. Key param is `const unsigned char *`. Prefer this for read-only access.
-- `set_value()` returns `hash_table_entry_t*` (NULL on allocation failure). Hashtable makes internal copies. Do NOT free the return value.
+- `set_value()` returns `bool` (false on allocation failure). Hashtable makes internal copies. Do NOT free internal data.
 - `uint64_to_string()` / `int64_to_string()` return malloc'd strings. MUST free.
 - `construct_*_command()` returns malloc'd buffers. MUST free after send.
 - Free ALL allocated memory on ALL error paths.
@@ -50,8 +49,6 @@ make -f Makefile.fkvs tests
 6. `src/commands/client/client_command_handlers.h` -- cmd_* declaration
 7. `src/commands/client/client_command_handlers.c` -- cmd_* implementation + add to `command_table[]` + add to `cmd_unknown()` exclusion + response handler
 8. `tests/` -- unit tests (+ update `CMakeLists.txt` if new source files)
-
-**Handler ordering rule**: Frame validation MUST happen BEFORE lazy expiration (`check_and_delete_if_expired`).
 
 **Response protocol note**: `send_reply()` places `STATUS_SUCCESS` (0x01) at `buffer[2]`, NOT the CMD byte. Only `send_pong()` places `CMD_PING`. Client response dispatch by CMD byte at buffer[2] only works for PING — all other responses fall through to the generic else branch.
 

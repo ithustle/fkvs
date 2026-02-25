@@ -61,7 +61,7 @@ core_len = 1 + 2 + key_len + 2 + value_len
 ```
 Request:  [core_len:2][0x02][key_len:2][key:N]
 Response: send_reply → [core_len:2][0x01][value_len:2][value:N]
-Error:    send_error → [0x00] (key not found or expired)
+Error:    send_error → [0x00] (key not found)
 core_len = 3 + key_len
 ```
 
@@ -107,41 +107,12 @@ Response: send_reply → new value
 core_len = 1 + 2 + key_len + 2 + decr_len
 ```
 
-### EXPIRE (0x09) — key + seconds
-```
-Request:  [core_len:2][0x09][key_len:2][key:N][sec_len:2][seconds:N]
-Response: send_reply → "1" (success) or "0" (key not found)
-core_len = 1 + 2 + key_len + 2 + sec_len
-```
-
-### TTL (0x0A) — key only
-```
-Request:  [core_len:2][0x0A][key_len:2][key:N]
-Response: send_reply → "-2" (not found), "-1" (no TTL), "N" (seconds remaining)
-core_len = 3 + key_len
-```
-
-### SETEX (0x0B) — key + seconds + value
-```
-Request:  [core_len:2][0x0B][key_len:2][key:N][sec_len:2][sec:N][val_len:2][val:N]
-Response: send_reply → echoed value
-core_len = 1 + 2 + key_len + 2 + sec_len + 2 + value_len
-```
-
-### PERSIST (0x0C) — key only
-```
-Request:  [core_len:2][0x0C][key_len:2][key:N]
-Response: send_reply → "1" (TTL removed) or "0" (key not found / no TTL)
-core_len = 3 + key_len
-```
-
 ## Layout Categories
 
 | Type | Commands | core_len |
 |------|----------|----------|
-| Key only | GET, INCR, DECR, TTL, PERSIST | `3 + key_len` |
-| Key + value | SET, INCRBY, DECRBY, EXPIRE | `1 + 2 + key_len + 2 + val_len` |
-| Key + arg + value | SETEX | `1 + 2 + key_len + 2 + arg_len + 2 + val_len` |
+| Key only | GET, INCR, DECR | `3 + key_len` |
+| Key + value | SET, INCRBY, DECRBY | `1 + 2 + key_len + 2 + val_len` |
 | No args | INFO | `1` |
 | Optional value | PING | `3 + value_len` |
 
@@ -164,17 +135,18 @@ size_t len = buffer[pos] << 8 | buffer[pos + 1];
 1. Need at least 2 bytes to read core_len
 2. Calculate `frame_need = 2 + core_len`
 3. Wait until buffer has enough bytes
-4. `dispatch_command(client_fd, buffer, frame_len)` — extracts CMD at `buffer[2]`
+4. `dispatch_command(client, buffer, frame_len)` — extracts CMD at `buffer[2]`
 5. `memmove()` to shift remaining bytes (pipelining support)
 6. Reset `frame_need = -1` for next frame
 
 ## Response Functions (in command_registry.c)
 
 ```c
-send_ok(client_fd)                       // Single byte [0x01]
-send_error(client_fd)                    // Single byte [0x00]
-send_reply(client_fd, data, len)         // Full frame: [core_len][STATUS_SUCCESS][value_len][data]
-send_pong(client_fd, buffer)             // Full frame: [core_len][CMD_PING][value_len][value]
+send_ok(client)                          // Single byte [0x01]
+send_error(client)                       // Single byte [0x00]
+send_reply(client, data, len)            // Full frame: [core_len][STATUS_SUCCESS][value_len][data]
+send_pong(client, buffer)                // Full frame: [core_len][CMD_PING][value_len][value]
+wbuf_flush(client)                       // Flush write buffer (pipelining)
 ```
 
 **Client dispatch limitation:** Since `send_reply()` always puts `STATUS_SUCCESS` (0x01) at `buffer[2]`, the client cannot distinguish which command generated the response by inspecting that byte. Only PING responses carry the `CMD_PING` byte. All other `send_reply()` responses fall through to the generic handler in `command_response_handler()`.

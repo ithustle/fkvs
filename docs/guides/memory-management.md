@@ -6,18 +6,12 @@ FKVS is a single-threaded C server with no garbage collector. Every allocation m
 
 ### Hashtable owns entries
 
-```c
-// find_entry() returns a DIRECT pointer into the hashtable
-// Key param: const unsigned char *
-hash_table_entry_t *entry = find_entry(table, key, key_len);
-// Do NOT free(entry) — it belongs to the hashtable
-// You CAN modify entry->value->expire_at directly
-```
+The hashtable stores entries internally. You cannot access entries directly — use `get_value()` which returns a deep copy.
 
 ### get_value() returns a DEEP COPY
 
 ```c
-// Key param: unsigned char * (no const — different from find_entry)
+// Key param: unsigned char * (no const)
 value_entry_t *value;
 size_t value_len;
 if (get_value(table, key, key_len, &value, &value_len)) {
@@ -36,7 +30,7 @@ if (get_value(table, key, key_len, &value, &value_len)) {
 // WRONG — MEMORY LEAK
 if (get_value(table, key, key_len, &value, &value_len)) {
     if (value->encoding != VALUE_ENTRY_TYPE_INT) {
-        send_error(client_fd);
+        send_error(client);
         return;  // LEAK: value and value->ptr not freed
     }
 }
@@ -44,7 +38,7 @@ if (get_value(table, key, key_len, &value, &value_len)) {
 // CORRECT
 if (get_value(table, key, key_len, &value, &value_len)) {
     if (value->encoding != VALUE_ENTRY_TYPE_INT) {
-        send_error(client_fd);
+        send_error(client);
         free(value->ptr);
         free(value);
         return;
@@ -55,21 +49,18 @@ if (get_value(table, key, key_len, &value, &value_len)) {
 }
 ```
 
-### set_value() returns hash_table_entry_t*
+### set_value() returns bool
 
 ```c
-// Signature: hash_table_entry_t *set_value(const hashtable_t *table,
+// Signature: bool set_value(const hashtable_t *table,
 //     const unsigned char *key, size_t key_len,
 //     const void *value, size_t value_len, int value_type)
-hash_table_entry_t *entry = set_value(table, key, key_len, val, val_len, encoding);
-// Returns NULL on allocation failure
-// Returns pointer to entry on success
-// Do NOT free the return — hashtable owns it
-// Hashtable makes internal copies of key and value
-if (!entry) {
-    send_error(client_fd);
+if (!set_value(table, key, key_len, val, val_len, encoding)) {
+    // Returns false on allocation failure
+    send_error(client);
     return;
 }
+// Hashtable makes internal copies of key and value
 ```
 
 ### uint64_to_string() and int64_to_string() return malloc'd
@@ -95,11 +86,11 @@ free(binary_cmd);  // MANDATORY
 ## Correct Pattern for Command Handlers
 
 ```c
-void handle_example_command(int client_fd, unsigned char *buffer, size_t bytes_read)
+void handle_example_command(client_t *client, unsigned char *buffer, size_t bytes_read)
 {
     // 1. Validations that don't allocate — can return freely
     if (bytes_read - 2 != command_length) {
-        send_error(client_fd);
+        send_error(client);
         return;  // OK — nothing allocated
     }
 
@@ -107,13 +98,13 @@ void handle_example_command(int client_fd, unsigned char *buffer, size_t bytes_r
     value_entry_t *value;
     size_t value_len;
     if (!get_value(table, key, key_len, &value, &value_len)) {
-        send_error(client_fd);
+        send_error(client);
         return;  // OK — get_value failed, nothing allocated
     }
 
     // 3. From here, EVERY return must free value
     if (value->encoding != VALUE_ENTRY_TYPE_INT) {
-        send_error(client_fd);
+        send_error(client);
         free(value->ptr);
         free(value);
         return;
@@ -128,12 +119,12 @@ void handle_example_command(int client_fd, unsigned char *buffer, size_t bytes_r
     char *result = uint64_to_string(current + 1);
 
     if (!set_value(table, key, key_len, result, strlen(result), VALUE_ENTRY_TYPE_INT)) {
-        send_error(client_fd);
+        send_error(client);
         free(result);
         return;
     }
 
-    send_reply(client_fd, (const unsigned char *)result, strlen(result));
+    send_reply(client, (const unsigned char *)result, strlen(result));
     free(result);
 }
 ```
@@ -144,8 +135,7 @@ void handle_example_command(int client_fd, unsigned char *buffer, size_t bytes_r
 2. **Every malloc() must have exactly one free() on every execution path**
 3. **Client buffer (client->buffer, 65536 bytes)** — NOT malloc'd, do NOT free
 4. **Data passed to set_value()** — hashtable makes an internal copy, you can free the original
-5. **find_entry() vs get_value()** — prefer find_entry() for read-only access (avoids copy)
-6. **get_value() key is `unsigned char *` (no const)**, find_entry() key is `const unsigned char *`
+5. **get_value() key is `unsigned char *` (no const)**
 
 ## Common Pitfalls
 
@@ -154,6 +144,5 @@ void handle_example_command(int client_fd, unsigned char *buffer, size_t bytes_r
 | `free(buffer)` on stack/client buffer | Crash/corruption | Don't free non-malloc'd buffers |
 | Forgetting `free(value->ptr)` from get_value | Memory leak | Always free ptr before value |
 | Forgetting `free(str)` from int64/uint64_to_string | Memory leak | Always free converted strings |
-| `free(entry)` from find_entry() | Use-after-free | Never free find_entry return |
-| Not checking `set_value() == NULL` | Undefined behavior | Always check return |
+| Not checking `set_value() == false` | Unhandled error | Always check return |
 | Stack local as io_uring buffer | Stack corruption | Use `static` or heap for async buffers |

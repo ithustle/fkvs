@@ -11,7 +11,7 @@ Read [Wire Protocol](wire-protocol.md) and [Memory Management](memory-management
 File: `src/commands/common/command_defs.h`
 
 ```c
-#define CMD_NEW_CMD 0x0D  // Next available after CMD_PERSIST=0x0C
+#define CMD_NEW_CMD 0x09  // Next available after CMD_DECR_BY=0x08
 ```
 
 ## Step 2: Implement the Server Handler
@@ -19,7 +19,7 @@ File: `src/commands/common/command_defs.h`
 File: `src/commands/server/server_command_handlers.h`
 
 ```c
-void handle_newcmd_command(int client_fd, unsigned char *buffer,
+void handle_newcmd_command(client_t *client, unsigned char *buffer,
                            size_t bytes_read);
 ```
 
@@ -27,10 +27,10 @@ File: `src/commands/server/server_command_handlers.c`
 
 The handler accesses the static `table` variable (`hashtable_t *`), initialized in `init_command_handlers(hashtable_t *ht)`.
 
-### Key-only command pattern (like GET, INCR, DECR, TTL, PERSIST):
+### Key-only command pattern (like GET, INCR, DECR):
 
 ```c
-void handle_newcmd_command(int client_fd, unsigned char *buffer,
+void handle_newcmd_command(client_t *client, unsigned char *buffer,
                            size_t bytes_read)
 {
     // 1. Extract lengths from buffer
@@ -41,29 +41,22 @@ void handle_newcmd_command(int client_fd, unsigned char *buffer,
     // 2. Validate frame integrity BEFORE any data access
     if (bytes_read - offset != command_length) {
         fprintf(stderr, "Incomplete command data for NEWCMD.\n");
-        send_error(client_fd);
+        send_error(client);
         return;
     }
 
-    // 3. Lazy expiration AFTER frame validation
-    if (check_and_delete_if_expired(&buffer[5], key_len)) {
-        send_error(client_fd);
-        return;
-    }
-
-    // 4. Command logic...
-    // Use find_entry() for direct access (no copy, do NOT free)
+    // 3. Command logic...
     // Use get_value() when a copy is needed (MUST free value->ptr and value)
 
-    // 5. Respond
-    send_reply(client_fd, result, result_len);
+    // 4. Respond
+    send_reply(client, result, result_len);
 }
 ```
 
-### Key + value command pattern (like SET, INCRBY, EXPIRE):
+### Key + value command pattern (like SET, INCRBY):
 
 ```c
-void handle_newcmd_command(int client_fd, unsigned char *buffer,
+void handle_newcmd_command(client_t *client, unsigned char *buffer,
                            size_t bytes_read)
 {
     const size_t command_length = buffer[0] << 8 | buffer[1];
@@ -73,31 +66,25 @@ void handle_newcmd_command(int client_fd, unsigned char *buffer,
 
     // Validate value length field is present
     if (pos + 2 > bytes_read) {
-        send_error(client_fd);
+        send_error(client);
         return;
     }
 
     const size_t value_length = buffer[pos] << 8 | buffer[pos + 1];
     if (pos + 2 + value_length > bytes_read) {
-        send_error(client_fd);
+        send_error(client);
         return;
     }
 
     if (bytes_read - offset != command_length) {
-        send_error(client_fd);
-        return;
-    }
-
-    // Lazy expiration after validation
-    if (check_and_delete_if_expired(&buffer[5], key_len)) {
-        send_error(client_fd);
+        send_error(client);
         return;
     }
 
     // Value data starts at buffer[pos + 2], length is value_length
     // ... command logic ...
 
-    send_reply(client_fd, result, result_len);
+    send_reply(client, result, result_len);
 }
 ```
 
@@ -241,17 +228,12 @@ If you need custom formatting (e.g., `(integer)` prefix), you have two options:
 1. **Use a dedicated send function** (like `send_pong()`) that places your CMD byte at `buffer[2]`, then add a dispatch branch.
 2. **Handle formatting on the client side** before the response callback, based on which command was sent (the client knows what it requested).
 
-**Existing dead branches:** The current code has branches checking for `CMD_INFO`, `CMD_TTL`, `CMD_EXPIRE`, and `CMD_PERSIST` at `buffer[2]`. These never fire because `send_reply()` puts `STATUS_SUCCESS` (0x01) there, not the CMD byte. These branches are effectively dead code — all those responses go through the generic `else` branch.
-
 ## Memory Rules (MANDATORY)
 
 1. `get_value()` returns a deep copy — ALWAYS `free(value->ptr)` and `free(value)`
-2. `find_entry()` returns a direct pointer — do NOT free
-3. `uint64_to_string()` and `int64_to_string()` return malloc'd strings — ALWAYS free
-4. `set_value()` returns `hash_table_entry_t*` — NULL on failure
-5. Validate frame BEFORE lazy expiration
-6. Free ALL allocated memory in ALL error paths
-7. `get_value()` key param is `unsigned char *` (no const); `find_entry()` key is `const unsigned char *`
+2. `uint64_to_string()` and `int64_to_string()` return malloc'd strings — ALWAYS free
+3. `set_value()` returns `bool` — false on failure
+4. Free ALL allocated memory in ALL error paths
 
 ## File Checklist
 
